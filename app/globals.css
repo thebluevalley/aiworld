@@ -2,7 +2,18 @@
 @tailwind components;
 @tailwind utilities;
 
+/* 现代化清爽风格 */
 body {
-  background-color: black;
-  color: #4ade80;
+  @apply bg-gray-50 text-gray-800;
+}
+
+/* 滚动条美化 (可选) */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  @apply bg-gray-300 rounded-full;
 }
