@@ -2,124 +2,218 @@ import { NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
 import { callAI } from '@/lib/ai_client';
 
-export const maxDuration = 60;
-
+// --- 新的类型定义 ---
 interface NPC {
   id: string;
   name: string;
   role: string;
   personality: string;
-  status: { hp: number; hunger: number; };
+  status: { hp: number; hunger: number; sanity: number };
+  location_id: string;
+  relationships: Record<string, number>; // { "Name": score }
   is_alive: boolean;
 }
 
+interface Location {
+  id: string;
+  name: string;
+  resource_type: string;
+  danger_level: number;
+}
+
+interface Item {
+  name: string;
+  quantity: number;
+  type: string;
+}
+
+// 必须严格定义的 AI 输出结构
+interface AIDecision {
+  thought: string;
+  move_to: string; // 'camp', 'forest', 'ruins', 'lake' (如果不移动则填当前位置)
+  action_type: 'GATHER' | 'CRAFT' | 'BUILD' | 'STEAL' | 'ATTACK' | 'REST' | 'SOCIAL'; 
+  target: string; // 目标对象或物品名
+  speech: string;
+}
+
+export const maxDuration = 60;
+
 export async function POST() {
-  // 1. 获取存活 NPC
-  const { data: npcs } = await supabase
-    .from('npcs')
-    .select('*')
-    .eq('is_alive', true)
-    .returns<NPC[]>();
-  
-  if (!npcs || npcs.length === 0) return NextResponse.json({ message: 'No NPCs' });
+  // 1. 获取全局状态
+  const { data: world } = await supabase.from('world_state').select('*').single();
+  const turn = world?.turn_count || 1;
+  const weather = world?.weather || '晴朗';
 
-  // 2. 并行生成决策
+  // 2. 获取所有活着的 NPC
+  const { data: npcs } = await supabase.from('npcs').select('*').eq('is_alive', true).returns<NPC[]>();
+  if (!npcs || npcs.length === 0) return NextResponse.json({ message: 'Game Over' });
+
+  // 3. 获取公共资源库存 (owner_id is null)
+  const { data: publicItems } = await supabase.from('items').select('*').is('owner_id', null);
+  const publicInvText = publicItems?.map(i => `${i.name}x${i.quantity}`).join(', ') || "空";
+
+  // 4. 并行生成决策
   const actions = await Promise.all(npcs.map(async (npc) => {
-    // 获取记忆
-    const { data: memories } = await supabase
-      .from('memories')
-      .select('memory_text')
-      .eq('npc_name', npc.name)
-      .order('importance', { ascending: false })
-      .limit(3);
-    
-    const memoryText = memories?.map((m:any) => m.memory_text).join('; ') || "我刚来到这个世界，一切都很陌生。";
+    // 获取个人物品
+    const { data: myItems } = await supabase.from('items').select('*').eq('owner_id', npc.id);
+    const myInvText = myItems?.map(i => `${i.name}x${i.quantity}`).join(', ') || "无";
 
-    // --- 核心：高级 Prompt 设计 ---
-    const systemPrompt = `你是一个残酷生存游戏中的角色。你的名字是${npc.name}，职业是${npc.role}。
-    性格特征: ${npc.personality}。
-    
-    你必须时刻关注自己的生理状态：
-    - 当前 HP: ${npc.status.hp} (如果低于30，你会感到剧痛和恐惧)
-    - 当前 饥饿: ${npc.status.hunger}% (如果高于80，你必须不择手段找吃的)
-    
-    你的近期记忆: ${memoryText}
+    // 获取当前位置信息
+    const { data: location } = await supabase.from('locations').select('*').eq('id', npc.location_id).single();
 
-    请输出一个标准的 JSON 对象来描述你本回合的行动。不要包含任何 Markdown 格式。
-    格式要求:
+    // 记忆检索
+    const { data: memories } = await supabase.from('memories').select('memory_text').eq('npc_name', npc.name).order('importance', { ascending: false }).limit(3);
+    const memoryText = memories?.map((m: any) => m.memory_text).join('; ') || "";
+
+    // --- 高级游戏化 Prompt ---
+    const systemPrompt = `这是一个残酷的生存策略游戏。
+    角色: ${npc.name} (${npc.role}) | 性格: ${npc.personality}
+    状态: HP=${npc.status.hp}, 饥饿=${npc.status.hunger}, 理智=${npc.status.sanity}
+    当前位置: ${location.name} (产出: ${location.resource_type}, 危险: ${location.danger_level})
+    你的背包: ${myInvText}
+    公共仓库: ${publicInvText}
+    人际关系: ${JSON.stringify(npc.relationships)}
+
+    世界目标: 收集物资(Metal/Wood)修复信号塔(BUILD)，或者囤积食物(Food)活下去。
+    
+    可用指令说明:
+    - GATHER: 在当前地点搜集资源 (Forest->Wood, Lake->Food, Ruins->Metal)。会有危险。
+    - CRAFT: 消耗资源制作工具/武器 (需要Wood/Metal)。
+    - BUILD: 在【核心营地】消耗Wood/Metal增加信号塔进度。
+    - ATTACK/STEAL: 攻击他人或偷窃私人物品。
+    - REST: 恢复HP和理智，略微增加饥饿。
+    - SOCIAL: 与同地点的某人交谈，改变好感度。
+    - 移动: 改变 location_id 到新地点。
+
+    请输出 JSON 决策:
     {
-      "thought": "你的内心独白，必须体现你的性格和当前状态的焦虑感。",
-      "action": "你具体做了什么 (例如：搜寻食物、休息、攻击某人、与某人交易)。",
-      "public_speech": "你嘴里说出来的话 (如果不想说话，请填空字符串)。",
-      "status_change": { "hunger": 5, "hp": 0 } 
-    }
-    注意：status_change 表示本回合数值的变化。例如吃饭可以让 hunger: -20，被打会 hp: -10。自然消耗通常是 hunger: 5。
-    `;
+      "thought": "基于性格和状态的内心博弈",
+      "move_to": "目标地点ID (camp/forest/ruins/lake)",
+      "action_type": "指令类型",
+      "target": "具体目标 (如: Wood, Old Man, Signal Tower)",
+      "speech": "公开说的话"
+    }`;
 
-    const userPrompt = `新回合开始。现在的环境是破败的营地，物资匮乏。请开始行动。`;
+    const userPrompt = `第 ${turn} 回合。天气: ${weather}。如果饥饿>80必须优先找吃的。如果理智<30可能会发疯攻击人。请行动。`;
 
     // 调用 AI
     const resultJson = await callAI(userPrompt, systemPrompt, 'fast');
     
-    let decision = {
+    // 解析与兜底
+    let decision: AIDecision = {
       thought: "...",
-      action: "发呆",
-      public_speech: "...",
-      status_change: { hunger: 5, hp: 0 }
+      move_to: npc.location_id,
+      action_type: 'REST',
+      target: "Self",
+      speech: "..."
     };
 
     try {
       const parsed = JSON.parse(resultJson || "{}");
-      decision = { ...decision, ...parsed }; // 合并，防止缺字段
+      decision = { ...decision, ...parsed };
     } catch (e) {
-      console.error("JSON Parse Error:", e);
-      // 如果解析失败，把原始文本当作思考
-      decision.thought = resultJson || "思维混乱中...";
+      decision.thought = resultJson || "思维混乱";
     }
 
-    return { npc, decision };
+    return { npc, decision, location };
   }));
 
-  // 3. 结算状态 & 生成故事 (使用 Deep 模型)
-  const summaryPrompt = actions.map(a => 
-    `角色 [${a.npc.name}] (${a.npc.role}): 
-     动作: ${a.decision.action}
-     说话: "${a.decision.public_speech}"
-     心理: (${a.decision.thought})`
-  ).join('\n');
-
-  const story = await callAI(
-    summaryPrompt, 
-    "你是一位史诗传记作家。根据以下角色的行动，写一段沉浸感极强的微型小说（100字左右）。重点描写环境氛围和人物之间的张力。不要写成流水账。", 
-    'deep'
-  );
-
-  // 4. 写入数据库
-  if (story) {
-    await supabase.from('game_logs').insert({ event_type: 'turn_summary', content: story });
-  }
+  // 5. 结算逻辑 (Game Engine Logic) - 这里的代码负责把 AI 的决策变成数据库的数字变化
+  const logs = [];
+  let constructionAdded = 0;
 
   for (const act of actions) {
-    // 更新 NPC 数值
-    const newHunger = Math.min(100, Math.max(0, act.npc.status.hunger + (act.decision.status_change?.hunger || 5)));
-    const newHp = Math.min(100, Math.max(0, act.npc.status.hp + (act.decision.status_change?.hp || 0)));
+    const { npc, decision, location } = act;
+    let logContent = "";
     
-    await supabase.from('npcs').update({ 
-      status: { ...act.npc.status, hunger: newHunger, hp: newHp } 
-    }).eq('id', act.npc.id);
+    // 5.1 移动处理
+    if (decision.move_to !== npc.location_id) {
+        await supabase.from('npcs').update({ location_id: decision.move_to }).eq('id', npc.id);
+        logContent = `离开了 ${location.name}，前往 ${decision.move_to}。`;
+    }
+
+    // 5.2 动作处理
+    let hpChange = 0;
+    let hungerChange = 5; // 每回合基础消耗
+    let sanityChange = 0;
+
+    switch (decision.action_type) {
+        case 'GATHER':
+            // 简单概率判定
+            const success = Math.random() > (location.danger_level * 0.1);
+            if (success && location.resource_type !== 'none') {
+                // 获得物品
+                await supabase.from('items').insert({ 
+                    owner_id: npc.id, 
+                    name: location.resource_type === 'wood' ? '木材' : location.resource_type === 'metal' ? '废铁' : '生鱼',
+                    type: 'resource',
+                    quantity: 1
+                });
+                logContent += `在 ${location.name} 成功搜集到了 ${location.resource_type}。`;
+                hungerChange += 5; // 劳动消耗更多
+            } else {
+                logContent += `搜集失败，而且受了点伤。`;
+                hpChange -= 5;
+            }
+            break;
+        case 'BUILD':
+            if (npc.location_id === 'camp') {
+                // 检查背包
+                const { data: mats } = await supabase.from('items').select('*').eq('owner_id', npc.id).in('name', ['木材', '废铁']);
+                if (mats && mats.length > 0) {
+                    // 消耗一个材料
+                    await supabase.from('items').delete().eq('id', mats[0].id);
+                    constructionAdded += 5;
+                    logContent += `消耗了 ${mats[0].name} 修复信号塔！进度提升。`;
+                } else {
+                    logContent += `想修塔但是没有材料。`;
+                }
+            }
+            break;
+        case 'ATTACK':
+            logContent += `突然发狂，攻击了 ${decision.target}！`;
+            // 这里可以添加扣除目标HP的逻辑
+            break;
+        case 'REST':
+            hpChange += 5;
+            sanityChange += 5;
+            logContent += `原地休息，恢复体力。`;
+            break;
+        default:
+            logContent += `正在 ${decision.action_type} ${decision.target || ''}`;
+    }
+
+    // 更新状态
+    const newStatus = {
+        hp: Math.max(0, Math.min(100, npc.status.hp + hpChange)),
+        hunger: Math.max(0, Math.min(100, npc.status.hunger + hungerChange)),
+        sanity: Math.max(0, Math.min(100, npc.status.sanity + sanityChange))
+    };
+    
+    await supabase.from('npcs').update({ status: newStatus }).eq('id', npc.id);
 
     // 写入日志
     await supabase.from('game_logs').insert({
-      event_type: 'action',
-      content: JSON.stringify({
-        name: act.npc.name,
-        role: act.npc.role,
-        action: act.decision.action,
-        speech: act.decision.public_speech,
-        thought: act.decision.thought
-      })
+        event_type: 'action',
+        content: JSON.stringify({
+            name: npc.name,
+            role: npc.role,
+            location: decision.move_to,
+            action: logContent,
+            speech: decision.speech,
+            thought: decision.thought
+        })
     });
   }
+
+  // 6. 更新世界状态
+  if (constructionAdded > 0) {
+      await supabase.rpc('increment_construction', { val: constructionAdded }); // 需要在supabase定义rpc，或者先简单查再更
+      // 简单版：
+      const { data: w } = await supabase.from('world_state').select('construction_progress').single();
+      await supabase.from('world_state').update({ construction_progress: (w?.construction_progress || 0) + constructionAdded }).eq('id', 1);
+  }
+  await supabase.from('world_state').update({ turn_count: turn + 1 }).eq('id', 1);
 
   return NextResponse.json({ success: true });
 }
