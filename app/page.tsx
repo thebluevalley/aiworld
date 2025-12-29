@@ -1,13 +1,12 @@
 'use client';
-import { useState, useEffect, useRef } from 'react';
-import { supabase } from '@/lib/supabase';
+import { useState, useEffect } from 'react';
+import { supabase } from '@/lib/supabase'; // 确保 tsconfig.json 中 paths 配置正确，或者改成 '../lib/supabase'
 import { 
   Play, RefreshCw, Zap, Heart, Utensils, Brain, 
-  MapPin, Home as HomeIcon, Trees, Factory, Droplets, 
-  MessageCircle, Hammer, CloudRain, Sun, CloudFog 
+  Home as HomeIcon, Trees, Factory, Droplets, 
+  Terminal, Hammer
 } from 'lucide-react';
 
-// --- 类型定义 ---
 interface NPC {
   id: string;
   name: string;
@@ -18,7 +17,6 @@ interface NPC {
 
 interface WorldState {
   turn_count: number;
-  weather: string;
   construction_progress: number;
 }
 
@@ -28,12 +26,11 @@ interface GameLog {
   created_at: string;
 }
 
-// --- 地点配置 ---
 const LOCATIONS: Record<string, { name: string, icon: any, color: string, desc: string }> = {
-  'camp': { name: '核心营地', icon: HomeIcon, color: 'bg-amber-50 border-amber-200 text-amber-800', desc: '建设巴别塔的基地' },
-  'forest': { name: '迷雾森林', icon: Trees, color: 'bg-emerald-50 border-emerald-200 text-emerald-800', desc: '产出: 木材 (危险: 中)' },
-  'ruins': { name: '旧城废墟', icon: Factory, color: 'bg-slate-50 border-slate-200 text-slate-800', desc: '产出: 废铁 (危险: 高)' },
-  'lake': { name: '寂静湖', icon: Droplets, color: 'bg-cyan-50 border-cyan-200 text-cyan-800', desc: '产出: 食物 (危险: 低)' },
+  'camp': { name: '核心营地', icon: HomeIcon, color: 'text-amber-400 border-amber-500/30 bg-amber-950/20', desc: '庇护所与信号塔' },
+  'forest': { name: '迷雾森林', icon: Trees, color: 'text-emerald-400 border-emerald-500/30 bg-emerald-950/20', desc: '资源: 木材' },
+  'ruins': { name: '旧城废墟', icon: Factory, color: 'text-rose-400 border-rose-500/30 bg-rose-950/20', desc: '资源: 废铁' },
+  'lake': { name: '寂静湖', icon: Droplets, color: 'text-cyan-400 border-cyan-500/30 bg-cyan-950/20', desc: '资源: 食物' },
 };
 
 export default function Home() {
@@ -41,24 +38,18 @@ export default function Home() {
   const [npcs, setNpcs] = useState<NPC[]>([]);
   const [logs, setLogs] = useState<GameLog[]>([]);
   const [loading, setLoading] = useState(false);
-  
-  // 神谕相关状态
   const [whisperTarget, setWhisperTarget] = useState<NPC | null>(null);
   const [whisperText, setWhisperText] = useState('');
-  const [sendingWhisper, setSendingWhisper] = useState(false);
 
-  // 1. 获取数据
   const fetchData = async () => {
     const { data: w } = await supabase.from('world_state').select('*').single();
     const { data: n } = await supabase.from('npcs').select('*').eq('is_alive', true).order('name');
-    const { data: l } = await supabase.from('game_logs').select('*').order('created_at', { ascending: false }).limit(10);
-    
+    const { data: l } = await supabase.from('game_logs').select('*').order('created_at', { ascending: false }).limit(20);
     if (w) setWorld(w);
     if (n) setNpcs(n);
     if (l) setLogs(l);
   };
 
-  // 2. 下一回合
   const nextTurn = async () => {
     if (loading) return;
     setLoading(true);
@@ -67,205 +58,185 @@ export default function Home() {
     setLoading(false);
   };
 
-  // 3. 发送神谕
   const sendWhisper = async () => {
     if (!whisperTarget || !whisperText) return;
-    setSendingWhisper(true);
     await fetch('/api/whisper', {
       method: 'POST',
-      body: JSON.stringify({ 
-        npc_id: whisperTarget.id, 
-        npc_name: whisperTarget.name,
-        message: whisperText 
-      })
+      body: JSON.stringify({ npc_id: whisperTarget.id, npc_name: whisperTarget.name, message: whisperText })
     });
     setWhisperText('');
     setWhisperTarget(null);
-    setSendingWhisper(false);
-    alert('神谕已降下，该角色将在下回合收到指引。');
+    alert('神谕已发送');
   };
 
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 5000);
+    const interval = setInterval(fetchData, 3000);
     return () => clearInterval(interval);
   }, []);
 
-  // 解析日志 (处理 JSON 或 纯文本)
   const parseLog = (content: string) => {
     try {
       const data = JSON.parse(content);
       return (
-        <span>
-          <span className="font-bold text-gray-800">{data.name}</span>: {data.action} 
-          <span className="text-gray-400 text-xs ml-2">"{data.speech}"</span>
-        </span>
+        <div className="flex gap-2 items-start text-sm">
+          <span className="font-bold text-slate-300 whitespace-nowrap">[{data.name}]</span>
+          <div className="flex flex-col">
+            <span className="text-slate-400">{data.action}</span>
+            {data.speech && <span className="text-cyan-600/80 italic">"{data.speech}"</span>}
+          </div>
+        </div>
       );
     } catch {
-      return <span>{content}</span>;
+      return <span className="text-slate-500 text-sm">{content}</span>;
     }
   };
 
-  // 获取天气图标
-  const getWeatherIcon = (w: string) => {
-    if (w?.includes('雨')) return <CloudRain size={20} className="text-blue-500"/>;
-    if (w?.includes('雾')) return <CloudFog size={20} className="text-gray-400"/>;
-    return <Sun size={20} className="text-orange-500"/>;
-  };
-
   return (
-    <div className="min-h-screen bg-slate-100 text-slate-900 font-sans p-4 md:p-8">
+    <div className="min-h-screen bg-slate-950 text-slate-200 font-mono p-4 md:p-6 selection:bg-amber-500/30">
       
-      {/* --- 顶部 HUD --- */}
-      <header className="max-w-6xl mx-auto bg-white rounded-xl shadow-sm border border-slate-200 p-4 mb-6 flex flex-col md:flex-row justify-between items-center gap-4">
+      {/* 顶部仪表盘 */}
+      <header className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6 border-b border-slate-800 pb-6">
         <div className="flex items-center gap-4">
-          <div className="bg-slate-900 text-white p-3 rounded-lg">
-            <h1 className="font-black text-xl tracking-tighter">SHELTER</h1>
-            <p className="text-xs text-slate-400">BABEL PROJECT</p>
+          <div className="w-12 h-12 bg-amber-600 rounded flex items-center justify-center shadow-[0_0_15px_rgba(245,158,11,0.5)]">
+            <Terminal size={24} className="text-black" />
           </div>
-          <div className="space-y-1">
-            <div className="flex items-center gap-2 text-sm font-bold text-slate-600">
-              <RefreshCw size={16}/> 第 {world?.turn_count || 0} 回合
-              <span className="mx-2 text-slate-300">|</span>
-              {getWeatherIcon(world?.weather || '')} {world?.weather}
-            </div>
-            {/* 巴别塔进度条 */}
-            <div className="w-48">
-              <div className="flex justify-between text-xs mb-1 font-bold text-amber-600">
-                <span className="flex items-center gap-1"><Hammer size={12}/> 信号塔修复进度</span>
-                <span>{world?.construction_progress || 0}%</span>
-              </div>
-              <div className="h-2 bg-slate-100 rounded-full overflow-hidden border border-slate-200">
-                <div className="h-full bg-amber-500 transition-all duration-500" style={{width: `${world?.construction_progress || 0}%`}}></div>
-              </div>
+          <div>
+            <h1 className="text-2xl font-black tracking-widest text-slate-100">SHELTER</h1>
+            <div className="flex items-center gap-2 text-xs text-amber-500 font-bold uppercase tracking-wider">
+              <span className="w-2 h-2 bg-amber-500 rounded-full animate-pulse"></span>
+              Online | Turn {world?.turn_count || 0}
             </div>
           </div>
         </div>
 
-        <button 
-          onClick={nextTurn} 
-          disabled={loading}
-          className="flex items-center gap-2 bg-slate-900 hover:bg-slate-800 text-white px-6 py-3 rounded-lg font-bold transition-all disabled:opacity-50 shadow-lg shadow-slate-200"
-        >
-          {loading ? <RefreshCw className="animate-spin" /> : <Play fill="currentColor" />}
-          {loading ? '演化中...' : '下一回合'}
-        </button>
+        {/* 进度条 */}
+        <div className="bg-slate-900/50 border border-slate-800 rounded p-3 flex flex-col justify-center">
+          <div className="flex justify-between text-xs mb-2 font-bold text-slate-400 uppercase">
+            <span className="flex items-center gap-2"><Hammer size={12}/> Babel Tower Protocol</span>
+            <span>{world?.construction_progress || 0}%</span>
+          </div>
+          <div className="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
+            <div 
+              className="h-full bg-gradient-to-r from-amber-700 to-amber-500 transition-all duration-700 shadow-[0_0_10px_rgba(245,158,11,0.3)]" 
+              style={{width: `${world?.construction_progress || 0}%`}}
+            ></div>
+          </div>
+        </div>
+
+        {/* 控制区 */}
+        <div className="flex items-center justify-end">
+          <button 
+            onClick={nextTurn} 
+            disabled={loading}
+            className="group relative bg-slate-800 hover:bg-slate-700 text-slate-200 px-6 py-3 rounded border border-slate-700 transition-all overflow-hidden disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <div className="absolute inset-0 w-1 bg-amber-500 transition-all group-hover:w-full opacity-10"></div>
+            <div className="flex items-center gap-2 font-bold relative z-10">
+              {loading ? <RefreshCw className="animate-spin" size={18}/> : <Play size={18} fill="currentColor"/>}
+              <span>{loading ? 'PROCESSING...' : 'NEXT CYCLE'}</span>
+            </div>
+          </button>
+        </div>
       </header>
 
-      {/* --- 游戏主地图 (2x2 Grid) --- */}
-      <main className="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+      {/* 主地图区域 */}
+      <main className="grid grid-cols-1 lg:grid-cols-4 gap-6 mb-8">
         {Object.entries(LOCATIONS).map(([key, loc]) => {
           const Icon = loc.icon;
-          // 筛选当前地点的 NPC
           const localNpcs = npcs.filter(n => n.location_id === key);
-
+          
           return (
-            <div key={key} className={`rounded-xl border-2 p-4 min-h-[200px] flex flex-col transition-all ${loc.color}`}>
-              {/* 地点标题 */}
-              <div className="flex justify-between items-start mb-4 border-b border-black/5 pb-2">
+            <div key={key} className={`border rounded-lg p-4 min-h-[240px] flex flex-col transition-all relative overflow-hidden group ${loc.color}`}>
+              {/* 背景装饰网格 */}
+              <div className="absolute inset-0 opacity-5 bg-[length:30px_30px] bg-grid-white"></div>
+              
+              <div className="flex justify-between items-start mb-4 relative z-10">
                 <div className="flex items-center gap-2">
-                  <Icon size={20} />
-                  <h2 className="font-bold text-lg">{loc.name}</h2>
+                  <Icon size={18} />
+                  <h2 className="font-bold tracking-wider">{loc.name}</h2>
                 </div>
-                <span className="text-xs opacity-60 font-medium">{loc.desc}</span>
+                <span className="text-[10px] uppercase opacity-70 border border-current px-1 rounded">{loc.desc}</span>
               </div>
 
-              {/* NPC 列表 */}
-              <div className="flex-1 space-y-3">
-                {localNpcs.length === 0 && <div className="text-center py-8 opacity-40 text-sm italic">空无一人</div>}
-                
+              <div className="space-y-3 relative z-10 flex-1">
                 {localNpcs.map(npc => (
-                  <div key={npc.id} className="bg-white/90 backdrop-blur-sm p-3 rounded-lg shadow-sm border border-black/5 hover:scale-[1.02] transition-transform group">
-                    <div className="flex justify-between items-start">
-                      <div>
-                        <div className="font-bold text-slate-800 flex items-center gap-2">
-                          {npc.name} 
-                          <span className="text-[10px] bg-slate-100 px-1.5 py-0.5 rounded text-slate-500 border border-slate-200">{npc.role}</span>
-                        </div>
-                        {/* 三维状态条 */}
-                        <div className="flex gap-2 mt-2">
-                          <StatusBadge icon={Heart} value={npc.status.hp} color="bg-rose-500" />
-                          <StatusBadge icon={Utensils} value={npc.status.hunger} color="bg-orange-500" />
-                          <StatusBadge icon={Brain} value={npc.status.sanity} color="bg-purple-500" />
-                        </div>
-                      </div>
-                      
-                      {/* 神谕按钮 */}
+                  <div key={npc.id} className="bg-slate-950/80 backdrop-blur border border-slate-800 p-3 rounded hover:border-slate-600 transition-colors group/card">
+                    <div className="flex justify-between items-start mb-2">
+                      <span className="font-bold text-slate-200 text-sm">{npc.name}</span>
                       <button 
                         onClick={() => setWhisperTarget(npc)}
-                        className="text-slate-400 hover:text-purple-600 p-1 rounded-md hover:bg-purple-50 transition-colors"
-                        title="下达神谕"
+                        className="opacity-0 group-hover/card:opacity-100 transition-opacity text-xs bg-slate-800 hover:bg-amber-600 hover:text-black px-2 py-0.5 rounded text-slate-400"
                       >
-                        <MessageCircle size={18} />
+                        Whisper
                       </button>
+                    </div>
+                    
+                    {/* 状态条 */}
+                    <div className="space-y-1">
+                      <Bar value={npc.status.hp} color="bg-rose-600" label="HP" />
+                      <Bar value={npc.status.hunger} color="bg-amber-600" label="HUN" />
+                      <Bar value={npc.status.sanity} color="bg-purple-600" label="SAN" />
                     </div>
                   </div>
                 ))}
+                {localNpcs.length === 0 && (
+                  <div className="h-full flex items-center justify-center opacity-20">
+                    <span className="text-4xl font-thin tracking-widest">EMPTY</span>
+                  </div>
+                )}
               </div>
             </div>
           );
         })}
       </main>
 
-      {/* --- 底部日志 --- */}
-      <footer className="max-w-6xl mx-auto bg-white rounded-xl shadow-sm border border-slate-200 p-6">
-        <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4">系统日志</h3>
-        <div className="space-y-2 max-h-40 overflow-y-auto font-mono text-sm">
-          {logs.map(log => (
-            <div key={log.id} className="border-b border-slate-50 pb-1 mb-1 last:border-0">
-              <span className="text-slate-400 mr-2">[{new Date(log.created_at).toLocaleTimeString()}]</span>
-              {parseLog(log.content)}
-            </div>
-          ))}
+      {/* 日志区 */}
+      <footer className="border-t border-slate-800 pt-4 grid grid-cols-1 lg:grid-cols-1 gap-4">
+        <div className="bg-black/30 rounded border border-slate-800 p-4 font-mono text-xs h-64 overflow-y-auto">
+          <div className="sticky top-0 bg-slate-950/90 backdrop-blur pb-2 mb-2 border-b border-slate-800 text-slate-500 font-bold uppercase flex justify-between items-center">
+             <span>System Logs</span>
+             <span className="animate-pulse text-green-500">● LIVE</span>
+          </div>
+          <div className="space-y-1.5">
+            {logs.map(log => (
+              <div key={log.id} className="border-l-2 border-slate-800 pl-2 hover:border-amber-500 transition-colors py-0.5">
+                <span className="text-slate-600 mr-3">[{new Date(log.created_at).toLocaleTimeString()}]</span>
+                {parseLog(log.content)}
+              </div>
+            ))}
+          </div>
         </div>
       </footer>
 
-      {/* --- 神谕弹窗 (Modal) --- */}
+      {/* 神谕弹窗 */}
       {whisperTarget && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6 animate-in zoom-in-95 duration-200">
-            <h3 className="text-xl font-bold mb-2 flex items-center gap-2">
-              <Zap className="text-purple-600" fill="currentColor"/> 
-              神谕连接: {whisperTarget.name}
-            </h3>
-            <p className="text-sm text-slate-500 mb-4">
-              你正在向该角色的潜意识植入一个念头。这将作为最高优先级记忆影响他/她的下一次行动。
-            </p>
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-slate-900 border border-slate-700 rounded-lg max-w-md w-full p-6 shadow-2xl">
+            <h3 className="text-xl font-bold text-amber-500 mb-2">WHISPER PROTOCOL</h3>
+            <p className="text-sm text-slate-400 mb-4">Target: {whisperTarget.name}</p>
             <textarea 
               value={whisperText}
               onChange={(e) => setWhisperText(e.target.value)}
-              placeholder="例如：去森林里伐木，不要再偷懒了..."
-              className="w-full border border-slate-300 rounded-lg p-3 min-h-[100px] mb-4 focus:ring-2 focus:ring-purple-500 focus:outline-none"
+              className="w-full bg-black border border-slate-700 rounded p-3 text-slate-200 focus:border-amber-500 outline-none h-32 mb-4 font-mono text-sm"
+              placeholder="Inject command directly into cortex..."
             />
             <div className="flex justify-end gap-3">
-              <button 
-                onClick={() => setWhisperTarget(null)}
-                className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg"
-              >
-                取消
-              </button>
-              <button 
-                onClick={sendWhisper}
-                disabled={sendingWhisper || !whisperText.trim()}
-                className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg font-bold disabled:opacity-50"
-              >
-                {sendingWhisper ? '发送中...' : '降下神谕'}
-              </button>
+              <button onClick={() => setWhisperTarget(null)} className="px-4 py-2 text-slate-500 hover:text-slate-300">CANCEL</button>
+              <button onClick={sendWhisper} className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-black font-bold rounded">EXECUTE</button>
             </div>
           </div>
         </div>
       )}
-
     </div>
   );
 }
 
-// 小组件：状态徽章
-function StatusBadge({ icon: Icon, value, color }: { icon: any, value: number, color: string }) {
+function Bar({ value, color, label }: { value: number, color: string, label: string }) {
   return (
-    <div className="flex items-center gap-1 bg-slate-100 rounded px-1.5 py-0.5" title={`${value}%`}>
-      <Icon size={10} className="text-slate-500" />
-      <div className="w-8 h-1.5 bg-slate-200 rounded-full overflow-hidden">
+    <div className="flex items-center gap-2 text-[10px]">
+      <span className="text-slate-500 w-6 text-right">{label}</span>
+      <div className="flex-1 h-1.5 bg-slate-800 rounded-full overflow-hidden">
         <div className={`h-full ${color}`} style={{ width: `${value}%` }}></div>
       </div>
     </div>
