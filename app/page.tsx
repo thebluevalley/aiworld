@@ -3,7 +3,7 @@ import { useState, useEffect, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 import { 
   Play, RefreshCw, Zap, Heart, Utensils, Brain, 
-  MapPin, Home, Trees, Factory, Droplets, 
+  MapPin, Home as HomeIcon, Trees, Factory, Droplets, 
   MessageCircle, Hammer, CloudRain, Sun, CloudFog 
 } from 'lucide-react';
 
@@ -30,7 +30,7 @@ interface GameLog {
 
 // --- 地点配置 ---
 const LOCATIONS: Record<string, { name: string, icon: any, color: string, desc: string }> = {
-  'camp': { name: '核心营地', icon: Home, color: 'bg-amber-50 border-amber-200 text-amber-800', desc: '建设巴别塔的基地' },
+  'camp': { name: '核心营地', icon: HomeIcon, color: 'bg-amber-50 border-amber-200 text-amber-800', desc: '建设巴别塔的基地' },
   'forest': { name: '迷雾森林', icon: Trees, color: 'bg-emerald-50 border-emerald-200 text-emerald-800', desc: '产出: 木材 (危险: 中)' },
   'ruins': { name: '旧城废墟', icon: Factory, color: 'bg-slate-50 border-slate-200 text-slate-800', desc: '产出: 废铁 (危险: 高)' },
   'lake': { name: '寂静湖', icon: Droplets, color: 'bg-cyan-50 border-cyan-200 text-cyan-800', desc: '产出: 食物 (危险: 低)' },
